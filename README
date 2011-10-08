@@ -1,0 +1,7 @@
+
+XBMC Orphans and Widows by BaerMan altered to work with mySQL storage instead of sqlite.
+Useful for centralised xbmc setups!
+
+mySQL XBMC setup
+================
+See Settings here: http://wiki.xbmc.org/index.php?title=Advancedsettings.xml#.3Cmusicdatabase.3E.2F.3Cvideodatabase.3E
