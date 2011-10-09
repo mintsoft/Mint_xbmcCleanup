@@ -21,11 +21,9 @@
 # 2) files that are in library only
 # 3) entries in the library that are 'stacked' ones
 
-# To Do:
-#
+# TODO:
 # * examine wether a path is marked as defined content or excluded from
 #   scanning (strContent=None)
-# * rewrite the whole thing in python
 
 # Discussion and latest version:
 # http://forum.xbmc.org/showthread.php?t=62058
@@ -35,28 +33,33 @@
 ### Settings ###
 ################
 
-##host, user and password configured in /etc/mysql/my.cnf
-##DBPath reassigned to argfuguments to mysql client 
-DBPATH='--batch xbmc_video'
+## mySQL arguments:
+## credentials can be configurede here with -u -p and -h
+## or alternatively in /etc/mysql/my.cnf under [client]
+## xbmc_video is the name of the mySQL schema/database in-which the video
+## library is contained
+MYSQL_ARGS='--batch xbmc_video'
 
 ### Filenames for results and intermediate data
 ### You may change these to any name and place you like but beware not to
 ### overwrite or delete files you may still need
-PREFIX="/home/rob/xbmc_cleanup/mysql/xbmc_"
-DBPATHLIST="${PREFIX}db_path.lst"
-DBFILESLIST="${PREFIX}db_files.lst"
-FINDLIST="${PREFIX}find.lst"
-DIFFLIST="${PREFIX}diff.lst"
-DBONLYLIST="${PREFIX}db-only.lst"
-FSONLYLIST="${PREFIX}fs-only.lst"
-STACKEDLIST="${PREFIX}db-stacked.lst"
+## Intermediate files are prefixed xbmc_zzz
+DIRECTORY="/home/rob/xbmc_cleanup/mysql/"
+DBPATHLIST="${DIRECTORY}xbmc_zzz_db_path.lst"
+DBFILESLIST="${DIRECTORY}xbmc_zzz_db_files.lst"
+FINDLIST="${DIRECTORY}xbmc_zzz_find.lst"
+DIFFLIST="${DIRECTORY}xbmc_zzz_diff.lst"
+DBONLYLIST="${DIRECTORY}xbmc_db-only.lst"
+FSONLYLIST="${DIRECTORY}xbmc_fs-only.lst"
+STACKEDLIST="${DIRECTORY}xbmc_db-stacked.lst"
 
 ### Programs used ; either absolute path or command only if path to the
 ### binary is in variable $PATH ; each command may be extended by optional
 ### arguments - refer to the specific manpage for details
-SQLITECMD="mysql" ; FINDCMD="find" ; SORTCMD="sort"
+### CUTCMD is used to remove the first character of diff output
+MYSQLCMD="mysql" ; FINDCMD="find" ; SORTCMD="sort"
 GREPCMD="grep" ; RMCMD="rm" ; UNIQCMD="uniq"
-DIFFCMD="diff -a -b -B -U 0 -d"
+DIFFCMD="diff -a -b -B -U 0 -d" ; CUTCMD="cut -b 2-"
 
 #######################################
 ### Changes within the working code ###
@@ -78,20 +81,32 @@ DIFFCMD="diff -a -b -B -U 0 -d"
 ### working code ###
 ####################
 
-##RE: tr is used to remove tabs between fields 
-## tail is used to strip the column heading
+## RE: tr is used to remove tabs between fields
+## RE: tail is used to strip the column heading
 ${RMCMD} ${DBPATHLIST} ${DBFILESLIST} ${FINDLIST} ${DIFFLIST} ${STACKEDLIST} ${FSONLYLIST} ${DBONLYLIST} 2>/dev/null
 
-${SQLITECMD} ${DBPATH} < <(echo "SELECT strPath FROM path ORDER BY strPath;") \
+DIRLIST_SQL="SELECT strPath FROM path ORDER BY strPath;";
+FILELIST_SQL="SELECT strPath, strFilename FROM path INNER JOIN files USING (idPath) ORDER BY strPath, strFilename;";
+
+## RE: <() used to create a file descriptor of the SQL then < used to pass that to mysql,
+##     mySQL client doesn't support using SQL on the command line directly only through script files
+
+## Create a list of directories to scan, ignoring streams
+${MYSQLCMD} ${MYSQL_ARGS} < <(echo "${DIRLIST_SQL}") \
   | tr -d "\t" | tail -n +2\
+  | grep -Ev "^http[s]?:\/\/"\
   | ${SORTCMD} > ${DBPATHLIST}
 
-${SQLITECMD} ${DBPATH} < <(echo "SELECT strPath, strFilename FROM path, files WHERE path.idPath = files.idPath ORDER BY strPath, strFilename;") \
+## Create a list of files to compare
+${MYSQLCMD} ${MYSQL_ARGS} < <(echo "${FILELIST_SQL}") \
   | tr -d "\t" | tail -n +2\
   | ${SORTCMD} > ${DBFILESLIST}
 
-IFS='
-'
+
+## Set the Internal Separator to a new line for easier parsing between files in the diff
+IFS=$'\n';
+
+## Create list of video files
 for fPATH in $(<${DBPATHLIST}) ; do
     ${FINDCMD} ${fPATH} -maxdepth 1 \( \
  -name '*.avi' -o \
@@ -111,8 +126,18 @@ for fPATH in $(<${DBPATHLIST}) ; do
     \) | ${SORTCMD} >> ${FINDLIST}
 done
 unset IFS
+
+#Diff the database list and find list
 ${DIFFCMD} ${FINDLIST} ${DBFILESLIST} | ${GREPCMD} -v "^@@" | ${GREPCMD} -v [+-]\\{3\\} | ${SORTCMD} -k 1.2 | ${UNIQCMD} -s 1 > ${DIFFLIST}
-${GREPCMD} ^+ < ${DIFFLIST} | ${GREPCMD} -v '://' | ${GREPCMD} -v '^+/$' > ${DBONLYLIST}
-${GREPCMD} ^- < ${DIFFLIST} > ${FSONLYLIST}
+
+#Make a list of those files beginning with "+" meaning only exists in the db list
+${GREPCMD} ^+ < ${DIFFLIST} | ${GREPCMD} -v '://' | ${GREPCMD} -v '^+/$' | ${CUTCMD} > ${DBONLYLIST}
+
+#Make a list of those files beginning with "-" meaning only exists on the filesystem
+${GREPCMD} ^- < ${DIFFLIST} | ${CUTCMD} > ${FSONLYLIST}
+
+#list stacked files
 ${GREPCMD} "stack:///" < ${DIFFLIST} > ${STACKEDLIST}
+
+#tidy up intermediate files:
 ${RMCMD} ${DBPATHLIST} ${DBFILESLIST} ${FINDLIST} ${DIFFLIST} 2>/dev/null
